@@ -11,4 +11,4 @@ cluster_network_hostPrefix: 24
 cluster_service_networks:
   - 172.30.0.0/16
 
-add_csr_auto_approver: false
+add_csr_auto_approver: true
