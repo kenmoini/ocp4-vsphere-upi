@@ -217,8 +217,10 @@ storage:
             ssl-default-bind-ciphers kEECDH+aRSA+AES:kRSA+AES:+AES256:RC4-SHA:!kEDH:!LOW:!EXP:!MD5:!aNULL:!eNULL
             #stats socket /var/lib/haproxy/stats
             stats socket /tmp/haproxy-stats
+
           resolvers docker_resolver
             nameserver dns {{ cluster_nodes | community.general.json_query("[?type=='helper'].interfaces[0].dns_servers") | first | first }}:53
+
           defaults
             log     global
             mode    http
@@ -235,6 +237,7 @@ storage:
             timeout http-keep-alive 10s
             timeout check           10s
             maxconn                 3000
+
           listen  stats
             bind *:1936
             mode            http
@@ -250,48 +253,49 @@ storage:
             stats show-node
             stats uri  /haproxy?stats
             #stats auth admin:password
+
           frontend api-server
             bind *:6443
             mode tcp
             option tcplog
             default_backend openshift-api-server
+
           frontend machine-config-server
             bind *:22623
             default_backend machine-config-server
             mode tcp
             option tcplog
+
           frontend ingress-http
             bind *:80
             default_backend ingress-http
             mode tcp
             option tcplog
+
           frontend ingress-https
             bind *:443
             default_backend ingress-https
             mode tcp
             option tcplog
+
           backend openshift-api-server
             balance source
             mode tcp
 {% for node in cluster_nodes %}
-{% if node.type == 'bootstrap' %}
-            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:6443 check
-{% endif %}
-{% if node.type == 'control-plane' %}
+{% if node.type in ['bootstrap', 'control-plane'] %}
             server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:6443 check
 {% endif %}
 {% endfor %}
+
           backend machine-config-server
             balance source
             mode tcp
 {% for node in cluster_nodes %}
-{% if node.type == 'bootstrap' %}
-            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:22623 check
-{% endif %}
-{% if node.type == 'control-plane' %}
+{% if node.type in ['bootstrap', 'control-plane'] %}
             server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:22623 check
 {% endif %}
 {% endfor %}
+
           backend ingress-http
             balance source
             mode tcp
@@ -300,6 +304,7 @@ storage:
             server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:80 check
 {% endif %}
 {% endfor %}
+
           backend ingress-https
             balance source
             mode tcp
@@ -308,7 +313,7 @@ storage:
             server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:443 check
 {% endif %}
 {% endfor %}
-          
+            
 {% endif %}
 {% if helper_deploy_nginx|bool %}
     - path: /srv/nginx/templates/default.conf.template
@@ -327,5 +332,4 @@ storage:
                   autoindex_localtime on;
               }
           }
-
 {% endif %}
