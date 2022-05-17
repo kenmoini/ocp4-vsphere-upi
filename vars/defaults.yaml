@@ -1,0 +1,14 @@
+---
+rhel_iso_sha_sum: c324f3b07283f9393168f0a4ad2167ebbf7e4699d65c9670e0d9e58ba4e2a9a8
+download_rhel_iso: false
+
+rhcos_ova_local_path: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/ova/rhcos-vmware.x86_64.ova"
+rhcos_ova_remote_path: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/latest/rhcos-vmware.x86_64.ova
+rhcos_ova_remote_sha256: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/latest/sha256sum.txt
+
+cluster_network: 10.128.0.0/14
+cluster_network_hostPrefix: 24
+cluster_service_networks:
+  - 172.30.0.0/16
+
+add_csr_auto_approver: true
