@@ -1,0 +1,4 @@
+.generated_assets/
+.generated_assets/**
+*.cluster-config.yaml
+*.cluster-config.yml
