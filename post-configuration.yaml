@@ -1,0 +1,67 @@
+---
+- name: Post-cluster deployment configuration
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  tasks:
+  
+    - name: Read in variable files
+      include_vars:
+        dir: vars
+        extensions:
+          - 'yaml'
+          - 'yml'
+
+    - name: Perform preflight checks
+      include_tasks: tasks/preflight_checks.yml
+      tags:
+        - preflight
+
+    #===========================================================================
+    # Remove Bootstrap Node
+    #===========================================================================
+
+    - name: Shutdown the Bootstrap Node
+      when: cluster_nodes | community.general.json_query("[?type=='bootstrap'].name") | length > 0
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ vcenter_datacenter }}"
+        folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+        name: "{{ cluster_name }}-{{ cluster_nodes | community.general.json_query(\"[?type=='bootstrap'].name\") | first }}"
+        state: poweredoff
+      tags:
+        - helper_tasks
+        - vmware_tasks
+        - vmware_shutdown_bootstrap_node
+
+    - name: Delete the Bootstrap Node
+      when: cluster_nodes | community.general.json_query("[?type=='bootstrap'].name") | length > 0
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ vcenter_datacenter }}"
+        folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+        name: "{{ cluster_name }}-{{ cluster_nodes | community.general.json_query(\"[?type=='bootstrap'].name\") | first }}"
+        state: absent
+      tags:
+        - helper_tasks
+        - vmware_tasks
+        - vmware_delete_bootstrap_node
+
+    #===========================================================================
+    # Delete the CSR Auto Approver Workload
+    #===========================================================================
+
+    - name: Delete the CSR Auto Approver Workload
+      kubernetes.core.k8s:
+        kubeconfig: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/auth/kubeconfig"
+        state: absent
+        kind: Project
+        name: csr-auto-approver
+        api_version: project.openshift.io/v1
