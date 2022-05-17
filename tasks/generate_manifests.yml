@@ -76,6 +76,7 @@
 #====================================================================================================================
 # Add the CSR Auto Approver manifests
 #====================================================================================================================
+
 - name: Add CSR Auto Approver Manifests
   when: add_csr_auto_approver|bool
   block:
@@ -84,6 +85,10 @@
         paths: "files/csr_auto_approver"
         patterns: "*.yaml"
       register: csr_auto_approver_files
+
+    - name: d
+      debug:
+        msg: "{{ csr_auto_approver_files }}"
 
     - name: Copy CSR files over
       ansible.builtin.copy:
