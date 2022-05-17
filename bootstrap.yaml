@@ -41,6 +41,8 @@
         mode: '0755'
       loop:
         - "{{ generated_asset_directory }}"
+        - "{{ generated_asset_directory }}/{{ cluster_domain }}/"
+        - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/"
         - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/bin/"
         - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/ova/"
         - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/"
