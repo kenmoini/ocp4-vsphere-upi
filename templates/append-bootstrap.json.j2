@@ -3,7 +3,7 @@
     "config": {
       "merge": [
         {
-          "source": "http://{{ helper_node_target }}:8080/ignitions/{{ cluster_domain }}/{{ cluster_name }}/{{ 'helper' if node_item.type == "helper" }}{{ 'worker' if node_item.type == "application-node" }}{{ 'master' if node_item.type == "control-plane" }}{{ 'bootstrap' if node_item.type == "bootstrap" }}.ign"
+          "source": "http://{{ helper_node_target }}:8080/ignitions/{{ cluster_domain }}/{{ cluster_name }}/{{ node_item.type if node_item.type in ["helper", "bootstrap"] }}{{ 'worker' if node_item.type == "application-node" }}{{ 'master' if node_item.type == "control-plane" }}.ign"
         }
       ]
     },
