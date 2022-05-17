@@ -1,0 +1,331 @@
+variant: fcos
+version: 1.4.0
+passwd:
+  groups:
+{% if helper_deploy_haproxy|bool %}
+    - name: haproxy
+      gid: 1235
+{% endif %}
+{% if helper_deploy_nginx|bool %}
+    - name: nginx
+      gid: 101
+{% endif %}
+
+  users:
+    - name: core
+      groups:
+        - wheel
+        - sudo
+        - nginx
+      ssh_authorized_keys:
+{% for key in core_user_ssh_authorized_keys %}
+        - {{ key }}
+{% endfor %}
+
+{% if helper_deploy_haproxy|bool %}
+    - name: haproxy
+      uid: 1235
+      shell: /bin/bash
+      home_dir: /srv/haproxy
+      groups:
+        - haproxy
+      no_user_group: true
+{% endif %}
+{% if helper_deploy_nginx|bool %}
+    - name: nginx
+      uid: 101
+      shell: /bin/bash
+      home_dir: /srv/nginx
+      groups:
+        - nginx
+      no_user_group: true
+{% endif %}
+
+systemd:
+  units:
+{% if helper_deploy_nginx|bool %}
+    - name: nginx-container.service
+      enabled: true
+      contents: |-
+        [Unit]
+        Description=Nginx Container
+        After=network.target
+        Wants=network.target
+
+        [Service]
+        TimeoutStartSec=1m
+        Type=forking
+        ExecStartPre=-/bin/podman kill nginx-container
+        ExecStartPre=-/bin/podman rm -f nginx-container
+        ExecStartPre=/bin/podman pull docker.io/library/nginx:latest
+
+        ExecStart=/bin/podman run --name nginx-container -d --privileged \
+          -p 8080:8080 \
+          -e "NGINX_PORT=8080" \
+          --user 101:101 \
+          --restart always \
+          -v /srv/nginx/templates:/etc/nginx/templates \
+          -v /srv/nginx/conf.d:/etc/nginx/conf.d \
+          -v /srv/nginx/html:/usr/share/nginx/html \
+          -v /srv/nginx/cache:/var/cache/nginx \
+          -v /srv/nginx/run:/var/run \
+          -v /srv/nginx/log:/var/log/nginx \
+          docker.io/library/nginx:latest
+
+        ExecStop=/bin/podman stop nginx-container
+
+        Restart=always
+        RestartSec=30
+
+        [Install]
+        WantedBy=multi-user.target
+
+{% endif %}
+{% if helper_deploy_haproxy|bool %}
+    - name: haproxy-container.service
+      enabled: true
+      contents: |-
+        [Unit]
+        Description=HAProxy Container
+        After=network.target
+        Wants=network.target
+
+        [Service]
+        TimeoutStartSec=1m
+        Type=forking
+        ExecStartPre=-/bin/podman kill haproxy-container
+        ExecStartPre=-/bin/podman rm -f haproxy-container
+        ExecStartPre=-/bin/podman pull docker.io/library/haproxy:latest
+        ExecStartPre=/bin/bash -c 'echo "" >> /srv/haproxy/haproxy.cfg'
+
+        ExecStart=/bin/podman run --name haproxy-container -dt --sysctl net.ipv4.ip_unprivileged_port_start=0 --privileged \
+          -p 80:80 \
+          -p 443:443 \
+          -p 6443:6443 \
+          -p 1936:1936 \
+          -p 22623:22623 \
+          --user 1235:1235 \
+          --restart always \
+          -v /srv/haproxy:/usr/local/etc/haproxy \
+          docker.io/library/haproxy:latest
+
+        ExecStop=/bin/podman stop haproxy-container
+
+        Restart=always
+        RestartSec=30
+
+        [Install]
+        WantedBy=multi-user.target
+
+{% endif %}
+storage:
+  directories:
+  - path: /srv/certs
+    mode: 0775
+    user:
+      id: 1235
+    group:
+      id: 1235
+{% if helper_deploy_haproxy|bool %}
+  - path: /srv/haproxy
+    mode: 0775
+    user:
+      id: 1235
+    group:
+      id: 1235
+{% endif %}
+{% if helper_deploy_nginx|bool %}
+  - path: /srv/nginx
+    mode: 0775
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/html
+    mode: 0775
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/html/ignitions
+    mode: 0777
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/html/ignitions/{{ cluster_domain }}
+    mode: 0777
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/html/ignitions/{{ cluster_domain }}/{{ cluster_name }}
+    mode: 0777
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/templates
+    mode: 0775
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/cache
+    mode: 0775
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/run
+    mode: 0775
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/conf.d
+    mode: 0775
+    user:
+      id: 101
+    group:
+      id: 101
+  - path: /srv/nginx/log
+    mode: 0775
+    user:
+      id: 101
+    group:
+      id: 101
+{% endif %}
+
+  files:
+    - path: /etc/sysctl.d/20-silence-audit.conf
+      contents:
+        inline:
+          kernel.printk=4
+
+{% if helper_deploy_haproxy|bool %}
+    - path: /srv/haproxy/haproxy.cfg
+      user:
+        id: 101
+      group:
+        id: 101
+      contents:
+        inline: |-
+          global
+            log stdout format raw local0
+            daemon
+            ssl-default-bind-ciphers kEECDH+aRSA+AES:kRSA+AES:+AES256:RC4-SHA:!kEDH:!LOW:!EXP:!MD5:!aNULL:!eNULL
+            #stats socket /var/lib/haproxy/stats
+            stats socket /tmp/haproxy-stats
+          resolvers docker_resolver
+            nameserver dns {{ cluster_nodes | community.general.json_query("[?type=='helper'].interfaces[0].dns_servers") | first | first }}:53
+          defaults
+            log     global
+            mode    http
+            option  httplog
+            option  dontlognull
+            option  http-server-close
+            option                  redispatch
+            retries                 3
+            timeout http-request    10s
+            timeout queue           1m
+            timeout connect         10s
+            timeout client          1m
+            timeout server          1m
+            timeout http-keep-alive 10s
+            timeout check           10s
+            maxconn                 3000
+          listen  stats
+            bind *:1936
+            mode            http
+            log             global
+            maxconn 10
+            #clitimeout      100s
+            #srvtimeout      100s
+            #contimeout      100s
+            timeout queue   100s
+            stats enable
+            stats hide-version
+            stats refresh 30s
+            stats show-node
+            stats uri  /haproxy?stats
+            #stats auth admin:password
+          frontend api-server
+            bind *:6443
+            mode tcp
+            option tcplog
+            default_backend openshift-api-server
+          frontend machine-config-server
+            bind *:22623
+            default_backend machine-config-server
+            mode tcp
+            option tcplog
+          frontend ingress-http
+            bind *:80
+            default_backend ingress-http
+            mode tcp
+            option tcplog
+          frontend ingress-https
+            bind *:443
+            default_backend ingress-https
+            mode tcp
+            option tcplog
+          backend openshift-api-server
+            balance source
+            mode tcp
+{% for node in cluster_nodes %}
+{% if node.type == 'bootstrap' %}
+            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:6443 check
+{% endif %}
+{% if node.type == 'control-plane' %}
+            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:6443 check
+{% endif %}
+{% endfor %}
+          backend machine-config-server
+            balance source
+            mode tcp
+{% for node in cluster_nodes %}
+{% if node.type == 'bootstrap' %}
+            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:22623 check
+{% endif %}
+{% if node.type == 'control-plane' %}
+            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:22623 check
+{% endif %}
+{% endfor %}
+          backend ingress-http
+            balance source
+            mode tcp
+{% for node in cluster_nodes %}
+{% if node.type == 'application-node' %}
+            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:80 check
+{% endif %}
+{% endfor %}
+          backend ingress-https
+            balance source
+            mode tcp
+{% for node in cluster_nodes %}
+{% if node.type == 'application-node' %}
+            server {{ node.name }} {{ node.interfaces[0].ipv4[0].address }}:443 check
+{% endif %}
+{% endfor %}
+          
+{% endif %}
+{% if helper_deploy_nginx|bool %}
+    - path: /srv/nginx/templates/default.conf.template
+      contents:
+        inline:
+          server {
+              listen       8080;
+              server_name  _;
+
+              location / {
+                  root   /usr/share/nginx/html;
+                  index mirror-index.html;
+                  autoindex on;
+                  autoindex_format html;
+                  autoindex_exact_size off;
+                  autoindex_localtime on;
+              }
+          }
+
+{% endif %}

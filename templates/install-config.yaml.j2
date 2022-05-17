@@ -1,0 +1,50 @@
+apiVersion: v1
+baseDomain: {{ cluster_domain }}
+compute:
+- hyperthreading: Enabled
+  name: worker
+  replicas: 0
+controlPlane:
+  hyperthreading: Enabled
+  name: master
+  replicas: {{ cluster_nodes | community.general.json_query("[?type=='control-plane'].name") | length }}
+metadata:
+  name: {{ cluster_name }}
+fips: false
+networking:
+  clusterNetworks:
+  - cidr: {{ cluster_network }}
+    hostPrefix: {{ cluster_network_hostPrefix }}
+  networkType: OVNKubernetes
+  serviceNetwork:
+{% for svcNet in cluster_service_networks %}
+  - {{ svcNet }}
+{% endfor %}
+platform:
+  vsphere:
+    vcenter: {{ vcenter_hostname }}
+    username: {{ vcenter_username }}
+    password: {{ vcenter_password }}
+    datacenter: {{ vcenter_datacenter }}
+    defaultDatastore: {{ vcenter_datastore }}
+    folder: /{{ vcenter_datacenter }}/vm/{{ cluster_name }}
+pullSecret: |
+  {{ ocp_pull_secret | to_json | string }}
+sshKey: |
+  {{ ssh_public_key }}
+{% if cluster_proxy is defined %}
+proxy:
+{% if cluster_proxy.httpProxy is defined %}
+  http: {{ cluster_proxy.httpProxy }}
+{% endif %}
+{% if cluster_proxy.httpsProxy is defined %}
+  https: {{ cluster_proxy.httpsProxy }}
+{% endif %}
+{% if cluster_proxy.noProxy is defined %}
+  noProxy: {{ cluster_proxy.noProxy }}
+{% endif %}
+{% endif %}
+{% if additionalTrustBundle is defined %}
+additionalTrustBundle: |
+  {{ additionalTrustBundle | indent(2) }}
+{% endif %}
