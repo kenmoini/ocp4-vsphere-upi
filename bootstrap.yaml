@@ -217,23 +217,24 @@
       block:
         - name: Get the ignition files
           ansible.builtin.find:
-            paths: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config"
+            paths: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions"
             patterns: "*.ign"
           register: ignition_files_to_copy_to_helper
 
         - name: Copy the ignition files to the helper node via scp lololo
           ansible.builtin.shell: |
             scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {{ ssh_private_key_path }} {{ file_item.path }} core@{{ cluster_nodes | community.general.json_query("[?type=='helper'].name") | first }}.{{ cluster_name }}.{{ cluster_domain }}:/srv/nginx/html/ignitions/{{ cluster_domain }}/{{ cluster_name }}
-          loop: "{{ ignition_files_to_copy.files }}"
+          loop: "{{ ignition_files_to_copy_to_helper.files }}"
           loop_control:
             loop_var: file_item
             label: "Copying {{ file_item.path }}"
       tags:
+        - wait_for_hosts
         - helper_tasks
         - helper_copy_ignition_files
 
-    - name: Boot the remaining nodes
-      when: node_item.type != 'helper'
+    - name: Boot the bootstrap node
+      when: node_item.type in ['bootstrap']
       community.vmware.vmware_guest:
         hostname: "{{ vcenter_hostname }}"
         username: "{{ vcenter_username }}"
@@ -250,6 +251,94 @@
       tags:
         - vmware_tasks
         - vmware_boot_cluster_nodes
+        - vmware_boot_bootstrap_nodes
+
+    - name: Wait for the bootstrap node to come online via ssh
+      wait_for:
+        host: "{{ cluster_nodes | community.general.json_query(\"[?type=='bootstrap'].name\") | first }}.{{ cluster_name }}.{{ cluster_domain }}"
+        port: 22
+        delay: 10
+        timeout: 300
+      tags:
+        - wait_for_hosts
+        - bootstrap_tasks
+        - wait_for_bootstrap_node
+
+    - name: Boot the control plane nodes
+      when: node_item.type in ['control-plane']
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ vcenter_datacenter }}"
+        folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+        name: "{{ cluster_name }}-{{ node_item.name }}"
+        state: poweredon
+      loop: "{{ cluster_nodes }}"
+      loop_control:
+        loop_var: node_item
+        label: "Booting {{ node_item.name }}..."
+      tags:
+        - vmware_tasks
+        - vmware_boot_cluster_nodes
+        - vmware_boot_control_plane_nodes
+
+    - name: Wait for the control plane nodes to come online via ssh
+      when: node_item.type in ['control-plane']
+      wait_for:
+        host: "{{ node_item.name }}.{{ cluster_name }}.{{ cluster_domain }}"
+        port: 22
+        delay: 10
+        timeout: 300
+      loop: "{{ cluster_nodes }}"
+      loop_control:
+        loop_var: node_item
+        label: "Waiting for {{ node_item.name }} to come online..."
+      tags:
+        - wait_for_hosts
+        - control_plane_tasks
+        - wait_for_control_plane_nodes
+
+    - name: Pause for 10 minutes while the control plane is brought up
+      pause:
+        minutes: 10
+
+    - name: Boot the application nodes
+      when: node_item.type in ['application-node']
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ vcenter_datacenter }}"
+        folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+        name: "{{ cluster_name }}-{{ node_item.name }}"
+        state: poweredon
+      loop: "{{ cluster_nodes }}"
+      loop_control:
+        loop_var: node_item
+        label: "Booting {{ node_item.name }}..."
+      tags:
+        - vmware_tasks
+        - vmware_boot_cluster_nodes
+        - vmware_boot_app_nodes
+
+    - name: Wait for the application nodes to come online via ssh
+      when: node_item.type in ['application-node']
+      wait_for:
+        host: "{{ node_item.name }}.{{ cluster_name }}.{{ cluster_domain }}"
+        port: 22
+        delay: 10
+        timeout: 300
+      loop: "{{ cluster_nodes }}"
+      loop_control:
+        loop_var: node_item
+        label: "Waiting for {{ node_item.name }} to come online..."
+      tags:
+        - wait_for_hosts
+        - application_node_tasks
+        - wait_for_app_nodes
 
     - name: Finished bootstrapping!
       debug:
