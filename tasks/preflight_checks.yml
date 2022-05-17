@@ -1,0 +1,35 @@
+---
+- name: Check for required variables
+  assert:
+    that:
+      - vars[var_item] is defined
+  loop:
+    - ocp_pull_secret
+    - cluster_domain
+    - cluster_name
+    - cluster_type
+    - api_vip
+    - apps_vip
+    - vcenter_username
+    - vcenter_password
+    - vcenter_hostname
+    - vcenter_datacenter
+    - vcenter_cluster
+    - vcenter_datastore
+    - vcenter_network
+    - cluster_nodes
+  loop_control:
+    loop_var: var_item
+
+- name: Query vCenter for a connectivity test
+  community.vmware.vmware_datacenter_info:
+    hostname: '{{ vcenter_hostname }}'
+    username: '{{ vcenter_username }}'
+    password: '{{ vcenter_password }}'
+    validate_certs: false
+  register: vcenter_test_info
+
+- name: Fail if the vCenter instance cannot be connected to
+  fail:
+    msg: "Cannot connect to vCenter at {{ vcenter_hostname }}!"
+  when: vcenter_test_info.datacenter_info | length == 0

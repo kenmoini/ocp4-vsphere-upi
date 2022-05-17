@@ -1,0 +1,43 @@
+---
+
+- name: Wait for SSH to come up
+  wait_for_connection:
+    delay: 1
+    connect_timeout: 5
+    sleep: 20
+    timeout: 600
+
+- name: Create the html subdirectories
+  ansible.builtin.file:
+    path: /srv/nginx/html
+    state: directory
+    mode: 0755
+    owner: 101
+    group: 101
+  loop:
+    - "/srv/nginx/html/ignitions"
+    - "/srv/nginx/html/ignitions/{{ cluster_domain }}"
+    - "/srv/nginx/html/ignitions/{{ cluster_domain }}/{{ cluster_name }}"
+
+- name: Look for the generated ignition files
+  ansible.builtin.find:
+    path: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/ignitions"
+    patterns: "*.ign"
+  register: ignition_files
+  delegate_to: localhost
+
+- name: d
+  debug:
+    msg: "{{ ignition_files }}"
+  
+- name: Copy over the ignition files
+  copy:
+    src: "{{ ignition_files.files }}"
+    dest: "/srv/nginx/html/ignitions/{{ cluster_domain }}/{{ cluster_name }}/ignitions/"
+    owner: 101
+    group: 101
+  loop: "{{ ignition_files.files }}"
+  loop_control:
+    loop_var: file_item
+    label: "Copying {{ file_item.path }}"
+  

@@ -1,0 +1,279 @@
+---
+- name: Deploy OpenShift 4 to VMWare via UPI
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+
+    rh_offline_api_token: "{{ lookup('file', '/mnt/remoteWork/rh-api-offline-token') }}"
+
+    ocp_pull_secret_path: /mnt/remoteWork/ocp-pull-secret.new
+    ocp_pull_secret: '{{ lookup("file", ocp_pull_secret_path, convert_data=False) }}'
+
+    ssh_private_key_path: /mnt/remoteWork/tmp-keys/ocp_ssh_key_rsa
+    ssh_public_key_path: "{{ ssh_private_key_path}}.pub"
+    ssh_private_key: "{{ lookup('file', ssh_private_key_path) }}"
+    ssh_public_key: "{{ lookup('file', ssh_public_key_path) }}"
+
+    core_user_ssh_authorized_keys:
+      - "{{ ssh_public_key }}"
+
+    helper_node_target: "{{ cluster_nodes | community.general.json_query(\"[?type=='helper'].name\") | first }}.{{ cluster_name }}.{{ cluster_domain }}"
+
+  tasks:
+    - name: Read in variable files
+      include_vars:
+        dir: vars
+        extensions:
+          - 'yaml'
+          - 'yml'
+
+    - name: Perform preflight checks
+      include_tasks: tasks/preflight_checks.yml
+      tags:
+        - preflight
+
+    - name: Create generation directories
+      ansible.builtin.file:
+        state: directory
+        path: "{{ path_item }}"
+        mode: '0755'
+      loop:
+        - "{{ generated_asset_directory }}"
+        - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/bin/"
+        - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/ova/"
+        - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/"
+        - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions/"
+        - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/"
+      loop_control:
+        loop_var: path_item
+      tags:
+        - preflight
+        - create_directories
+
+    - name: Check for the needed binaries
+      include_tasks: tasks/check_ocp_binaries.yml
+      tags:
+        - preflight
+        - binary_checks
+
+    #===========================================================================
+    # Configuration Generation
+    #===========================================================================
+
+    - name: Generate the needed install-config.yaml and other manifests
+      include_tasks: tasks/generate_manifests.yml
+      tags:
+        - generate_manifests
+
+    #===========================================================================
+    # vCenter Organization
+    #===========================================================================
+
+    - name: Create Cluster Folder
+      community.vmware.vcenter_folder:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: false
+        datacenter_name: "{{ vcenter_datacenter }}"
+        folder_name: "{{ cluster_name }}"
+        folder_type: vm
+        state: present
+      tags:
+        - vmware_tasks
+        - vmware_create_folder
+
+    #===========================================================================
+    # RHCOS OVA
+    #===========================================================================
+
+    - name: Check for RHCOS OVA
+      ansible.builtin.stat:
+        path: "{{ rhcos_ova_local_path }}"
+      register: rhcos_ova_stat
+      tags:
+        - download_rhcos
+
+    - name: Download RHCOS OVA
+      when: rhcos_ova_stat.stat.exists == false
+      get_url:
+        url: "{{ rhcos_ova_remote_path }}"
+        dest: "{{ rhcos_ova_local_path }}"
+        mode: "0444"
+        checksum: "sha256:{{ rhcos_ova_remote_sha256 }}"
+      tags:
+        - download_rhcos
+
+    - name: Upload RHCOS OVA Template
+      community.vmware.vmware_deploy_ovf:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: false
+        datacenter: "{{ vcenter_datacenter }}"
+        cluster: "{{ vcenter_cluster }}"
+        datastore: "{{ vcenter_datastore }}"
+        folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+        allow_duplicates: no
+        disk_provisioning: thin
+        name: "{{ cluster_name }}-template"
+        networks: "{u'VM Network':u'{{ vcenter_network }}'}"
+        ovf: "{{ rhcos_ova_local_path }}"
+        power_on: no
+      tags:
+        - vmware_tasks
+        - vmware_upload_ova
+
+    - name: Set the os type
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: false
+        datacenter: "{{ vcenter_datacenter }}"
+        name: "{{ cluster_name }}-template"
+        state: present
+        guest_id: coreos64Guest
+        wait_for_customization: yes
+      tags:
+        - vmware_tasks
+        - vmware_upload_ova
+
+    #===========================================================================
+    # RHEL ISO
+    #===========================================================================
+
+    #- name: Download the RHEL ISO
+    #  when: (cluster_nodes | community.general.json_query("[?type=='helper'].name") | length > 0) and (download_rhel_iso|bool)
+    #  block:
+    #    - name: Authenticate to the RH API
+    #      include_tasks: tasks/rh_api_setup.yml
+    #      tags:
+    #        - rh_api_auth
+
+    #    - name: Download RHEL ISO
+    #      include_tasks: tasks/download_rhel_iso.yml
+    #      tags:
+    #        - download_rhel8
+
+    #    - name: Upload RHEL ISO to vCenter
+    #      include_tasks: tasks/upload_rhel_iso_to_vcenter.yml
+    #      tags:
+    #        - vmware_tasks
+    #        - vmware_upload_rhel8
+    #  tags:
+    #    - rhel_iso_setup
+
+    #===========================================================================
+    # VMWare Infrastructure
+    #===========================================================================
+
+    - name: Create the VMWare Infrastructure
+      include_tasks: tasks/create_vmware_infra.yml
+      loop: "{{ cluster_nodes }}"
+      loop_control:
+        loop_var: node_item
+      tags:
+        - vmware_tasks
+        - vmware_create_infra
+
+    - name: Pause for ignition copying to the http server
+      pause:
+        prompt: "Copy the ignition files to the http server - has this been done? (y/n)"
+      register: ignition_copy_pause
+      when: helper_type == "external"
+
+    - name: Boot the helper node
+      when: cluster_nodes | community.general.json_query("[?type=='helper'].name") | length > 0
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ vcenter_datacenter }}"
+        folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+        name: "{{ cluster_name }}-{{ cluster_nodes | community.general.json_query(\"[?type=='helper'].name\") | first }}"
+        state: poweredon
+      tags:
+        - helper_tasks
+        - vmware_tasks
+        - vmware_boot_helper_node
+
+    - name: Wait for the helper node to come online via ssh
+      when: (cluster_nodes | community.general.json_query("[?type=='helper'].name") | length > 0)
+      wait_for:
+        host: "{{ cluster_nodes | community.general.json_query(\"[?type=='helper'].name\") | first }}.{{ cluster_name }}.{{ cluster_domain }}"
+        port: 22
+        delay: 10
+        timeout: 300
+      tags:
+        - helper_tasks
+        - wait_for_helper_node
+
+    - name: SCP some files over to the helper node lol
+      when: (cluster_nodes | community.general.json_query("[?type=='helper'].name") | length > 0) and (helper_deploy_nginx|bool)
+      block:
+        - name: Get the ignition files
+          ansible.builtin.find:
+            paths: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config"
+            patterns: "*.ign"
+          register: ignition_files_to_copy_to_helper
+
+        - name: Copy the ignition files to the helper node via scp lololo
+          ansible.builtin.shell: |
+            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {{ ssh_private_key_path }} {{ file_item.path }} core@{{ cluster_nodes | community.general.json_query("[?type=='helper'].name") | first }}.{{ cluster_name }}.{{ cluster_domain }}:/srv/nginx/html/ignitions/{{ cluster_domain }}/{{ cluster_name }}
+          loop: "{{ ignition_files_to_copy.files }}"
+          loop_control:
+            loop_var: file_item
+            label: "Copying {{ file_item.path }}"
+      tags:
+        - helper_tasks
+        - helper_copy_ignition_files
+
+    - name: Boot the remaining nodes
+      when: node_item.type != 'helper'
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ vcenter_datacenter }}"
+        folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+        name: "{{ cluster_name }}-{{ node_item.name }}"
+        state: poweredon
+      loop: "{{ cluster_nodes }}"
+      loop_control:
+        loop_var: node_item
+        label: "Booting {{ node_item.name }}..."
+      tags:
+        - vmware_tasks
+        - vmware_boot_cluster_nodes
+
+    - name: Finished bootstrapping!
+      debug:
+        msg:
+          - "=========================================================="
+          - "Finished bootstrapping!"
+          - "=========================================================="
+          - ""
+          - "- Next, watch the installation with the following command:"
+          - ""
+          - "{{ openshift_install_binary }} --dir={{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/ wait-for bootstrap-complete --log-level=info"
+          - ""
+          - "- Once the bootstrapping process is complete, you will need to approve CSRs if you did not enable the auto approver workload:"
+          - ""
+          - "export KUBECONFIG={{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/auth/kubeconfig"
+          - "oc whoami"
+          - ""
+          - "oc get nodes"
+          - "oc get co"
+          - "oc get csr"
+          - "oc adm certificate approve <csr-name>"
+          - ""
+          - "From there you can log into the OpenShift Console with:"
+          - ""
+          - "Console URL: https://console-openshift-console.apps.{{ cluster_name }}.{{ cluster_domain }}"
+          - "Username: kubeadmin"
+          - "Password: {{ lookup('file', generated_asset_directory +'/'+ cluster_domain +'/'+ cluster_name +'/config/install-config/auth/kubeadmin-password') }}"

@@ -1,0 +1,24 @@
+---
+
+- name: Create the ISOs directory on the datacenter/datastore
+  community.vmware.vsphere_file:
+    host: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ vcenter_datacenter }}"
+    datastore: "{{ vcenter_datastore }}"
+    path: /ISOs
+    state: directory
+
+- name: Upload Discovery ISO to the target Cluster Host
+  community.vmware.vsphere_copy:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ vcenter_datacenter }}"
+    datastore: "{{ vcenter_datastore }}"
+    src: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/ova/rhel8.iso"
+    path: "ISOs/rhel8.iso"
+  ignore_errors: true

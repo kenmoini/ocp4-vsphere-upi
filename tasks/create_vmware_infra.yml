@@ -1,0 +1,184 @@
+---
+
+#- name: Debug Append Bootstrap Ignition File
+#  debug:
+#    msg: "{{ lookup('file', generated_asset_directory + '/' + cluster_domain + '/' + cluster_name + '/config/ignitions/append-' + node_item.name + '.ign') | from_json }}"
+#
+#- name: Debug Append Bootstrap Ignition File
+#  debug:
+#    msg: "{{ lookup('file', generated_asset_directory + '/' + cluster_domain + '/' + cluster_name + '/config/ignitions/append-' + node_item.name + '.ign') | b64encode }}"
+
+- name: Setup vApp Properties - {{ node_item.name }}
+  set_fact:
+    vapp_properties:
+      - key: "guestinfo.ignition.config.data"
+        value: "{{ lookup('file', generated_asset_directory + '/' + cluster_domain + '/' + cluster_name + '/config/ignitions/append-' + node_item.name + '.ign') | b64encode }}"
+      - key: "guestinfo.ignition.config.data.encoding"
+        value: base64
+      - key: "disk.EnableUUID"
+        value: "TRUE"
+
+- name: Setup VMWare network dictionary - {{ node_item.name }}
+  set_fact:
+    networks: "{{ networks | default([]) + [{ 'name' : vcenter_network, 'device_type' : 'vmxnet3', 'mac' : iface_item.mac_address|default('') }] }}"
+  loop: "{{ node_item.interfaces }}"
+  loop_control:
+    loop_var: iface_item
+
+- name: Setup base IP String - {{ node_item.name }}
+  set_fact:
+    ip_string: "rd.neednet=1"
+
+- name: Define IP String - {{ node_item.name }}
+  set_fact:
+    ip_string: "{{ ip_string + ' ip=' + iface_item.ipv4[0].address + '::' + iface_item.ipv4[0].gateway + ':' + (iface_item.ipv4[0].address|string + \"/\" + iface_item.ipv4[0].prefix|string)|ansible.netcommon.ipaddr(\"netmask\") + ':' + node_item.name + ':' + iface_item.name + ':off nameserver=' + iface_item.dns_servers | join(\" nameserver=\") }}"
+  loop: "{{ node_item.interfaces }}"
+  loop_control:
+    loop_var: iface_item
+
+- name: Append Static IP Options to vApp Properties - {{ node_item.name }}
+  set_fact:
+    vapp_properties: >-
+      {{
+        vapp_properties +
+        [
+          {
+            'key': 'guestinfo.afterburn.initrd.network-kargs',
+            'value': ip_string
+          }
+        ]
+      }}
+
+#- name: Debug
+#  debug:
+#    msg:
+#      -  "{{ vapp_properties | to_json }}"
+#      -  "{{ networks | to_json }}"
+#      -  "{{ ip_string }}"
+
+- name: Create VM - {{ node_item.name }}
+  community.vmware.vmware_guest:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ vcenter_datacenter }}"
+    datastore: "{{ vcenter_datastore }}"
+    cluster: "{{ vcenter_cluster }}"
+    name: "{{ cluster_name }}-{{ node_item.name }}"
+    folder: "/{{ vcenter_datacenter }}/vm/{{ cluster_name }}"
+    state: present
+    template: "{{ cluster_name }}-template"
+
+- name: Configure the Hardware for the VM - {{ node_item.name }}
+  community.vmware.vmware_guest:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ vcenter_datacenter }}"
+    datastore: "{{ vcenter_datastore }}"
+    cluster: "{{ vcenter_cluster }}"
+    name: "{{ cluster_name }}-{{ node_item.name }}"
+    hardware:
+      memory_mb: "{{ node_item.vm.memory * 1024 }}"
+      mem_reservation: "{{ node_item.vm.memory }}"
+      num_cpu_cores_per_socket : "{{ node_item.vm.cpu_cores }}"
+      num_cpus : "{{ (node_item.vm.cpu_sockets|int * node_item.vm.cpu_cores|int) }}"
+      hotadd_cpu: yes
+      hotadd_memory: yes
+      version: "{{ vcenter_hardware_version | int }}"
+      nested_virt: "{{ vsphere_nested_virt | default(False) }}"
+    wait_for_customization: yes
+  tags:
+    - vmware_tasks
+    - vmware_create_vms
+    - vmware_configure_vm_hardware
+
+- name: Configure the Network for the VM - {{ node_item.name }}
+  community.vmware.vmware_guest:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ vcenter_datacenter }}"
+    datastore: "{{ vcenter_datastore }}"
+    cluster: "{{ vcenter_cluster }}"
+    name: "{{ cluster_name }}-{{ node_item.name }}"
+    wait_for_customization: yes
+    networks: "{{ networks }}"
+  tags:
+    - vmware_tasks
+    - vmware_create_vms
+    - vmware_configure_vm_network
+
+- name: Configure the disks for the VM - {{ node_item.name }}
+  community.vmware.vmware_guest_disk:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ vcenter_datacenter }}"
+    name: "{{ cluster_name }}-{{ node_item.name }}"
+    disk: "{{ node_item.vm.disks }}"
+  tags:
+    - vmware_tasks
+    - vmware_create_vms
+    - vmware_configure_vm_disks
+
+- name: Give it the ignition config - {{ node_item.name }}
+  community.vmware.vmware_guest:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ vcenter_username }}"
+    password: "{{ vcenter_password }}"
+    validate_certs: false
+    datacenter: "{{ vcenter_datacenter }}"
+    datastore: "{{ vcenter_datastore }}"
+    cluster: "{{ vcenter_cluster }}"
+    name: "{{ cluster_name }}-{{ node_item.name }}"
+    advanced_settings: "{{ vapp_properties }}"
+    wait_for_customization: yes
+  tags:
+    - vmware_tasks
+    - vmware_create_vms
+    - vmware_configure_vm_advanced_settings
+
+#- name: Get the VM disk info
+#  community.vmware.vmware_guest_disk_info:
+#    hostname: "{{ vcenter_hostname }}"
+#    username: "{{ vcenter_username }}"
+#    password: "{{ vcenter_password }}"
+#    validate_certs: false
+#    datacenter: "{{ vcenter_datacenter }}"
+#    name: "{{ cluster_name }}-{{ node_item.name }}"
+#  register: disk_info
+#
+#- name: d
+#  debug:
+#    msg: "{{ disk_info }}"
+
+#- name: Get VM Facts
+#  community.vmware.vmware_guest_info:
+#    hostname: "{{ vcenter_hostname }}"
+#    username: "{{ vcenter_username }}"
+#    password: "{{ vcenter_password }}"
+#    validate_certs: no
+#    datacenter: "{{ vcenter_datacenter }}"
+#    name: "{{ cluster_name }}-{{ node_item.name }}"
+#  register: vmware_guest_facts_results
+#  tags:
+#    - vmware_tasks
+#    - vmware_create_vms
+#    - vmware_query_vms
+
+#- name: d
+#  debug:
+#    msg: "{{ vmware_guest_facts_results }}"
+
+- name: Resetting Facts
+  set_fact:
+    networks: []
+    disks: []
+    agent_names: []
+    ip_string: ""
+    vapp_properties: []

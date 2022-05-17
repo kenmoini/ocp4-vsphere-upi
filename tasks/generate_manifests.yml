@@ -1,0 +1,159 @@
+---
+
+#====================================================================================================================
+# Create the install-config.yaml files
+#====================================================================================================================
+
+- name: Template out the install-config.yaml
+  template:
+    src: install-config.yaml.j2
+    dest: "{{ dest_item }}"
+  loop:
+  - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/install-config.yaml"
+  - "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config.yaml"
+  loop_control:
+    loop_var: dest_item
+
+#====================================================================================================================
+# Create the manifests from the install-config.yaml file
+#====================================================================================================================
+
+- name: Create the needed manifests with openshift-install
+  ansible.builtin.shell: "{{ openshift_install_binary }} create manifests --dir={{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/"
+  args:
+    creates: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/.openshift_install_state.json"
+
+#====================================================================================================================
+# Disable scheduling workloads on control plane nodes if there are going to be app nodes
+#====================================================================================================================
+
+- name: Check to see if the cluster-scheduler-02-config.yml file exists
+  ansible.builtin.stat:
+    path: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/manifests/cluster-scheduler-02-config.yml"
+  register: cluster_scheduler_02_config_file_exists
+
+- name: Disable scheduling masters if there are more than one application node
+  ansible.builtin.replace:
+    path: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/manifests/cluster-scheduler-02-config.yml"
+    regexp: 'mastersSchedulable\:\ true'
+    replace: 'mastersSchedulable: false'
+  when: (cluster_nodes | community.general.json_query("[?type=='application-node'].name") | length > 0) and (cluster_scheduler_02_config_file_exists.stat.exists == true)
+
+#====================================================================================================================
+# Delete the Machines and MachineSets since this is a UPI deployment
+#====================================================================================================================
+
+- name: Machines delete file glob
+  ansible.builtin.find:
+    paths: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/openshift"
+    patterns: "99_openshift-cluster-api_master-machines-*.yaml"
+  register: machines_files_to_delete
+
+- name: MachineSets delete file glob
+  ansible.builtin.find:
+    paths: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/openshift"
+    patterns: "99_openshift-cluster-api_worker-machineset-*.yaml"
+  register: machinesets_files_to_delete
+
+- name: Machines delete
+  ansible.builtin.file:
+    state: absent
+    path: "{{ file_item.path }}"
+  loop: "{{ machines_files_to_delete.files }}"
+  loop_control:
+    loop_var: file_item
+    label: "Deleting {{ file_item.path }}"
+
+- name: MachineSets delete
+  ansible.builtin.file:
+    state: absent
+    path: "{{ file_item.path }}"
+  loop: "{{ machinesets_files_to_delete.files }}"
+  loop_control:
+    loop_var: file_item
+    label: "Deleting {{ file_item.path }}"
+
+#====================================================================================================================
+# Add the CSR Auto Approver manifests
+#====================================================================================================================
+- name: Add CSR Auto Approver Manifests
+  when: add_csr_auto_approver|bool
+  block:
+    - name: CSR file glob
+      ansible.builtin.find:
+        paths: "files/csr_auto_approver"
+        patterns: "*.yaml"
+      register: csr_auto_approver_files
+
+    - name: Copy CSR files over
+      ansible.builtin.copy:
+        src: "{{ file_item.path }}"
+        dest: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/manifests"
+      loop: "{{ csr_auto_approver_files.files }}"
+      loop_control:
+        loop_var: file_item
+        label: "Copying {{ file_item.path }}"
+
+    - name: Template the configmap
+      template:
+        src: csr-auto-approver.configmap.yaml.j2
+        dest: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/manifests/csr-auto-approver.configmap.yaml"
+
+#====================================================================================================================
+# Create the ignition config files from the manifests
+#====================================================================================================================
+
+- name: Create the needed ignition configs with openshift-install
+  ansible.builtin.shell: "{{ openshift_install_binary }} create ignition-configs --dir={{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/"
+  args:
+    creates: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config/bootstrap.ign"
+
+#====================================================================================================================
+# Copy & Create manifests that will be hosted
+#====================================================================================================================
+
+- name: Ignition file glob
+  ansible.builtin.find:
+    paths: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/install-config"
+    patterns: "*.ign"
+  register: ignition_files_to_copy
+
+- name: Copy the ignition files
+  ansible.builtin.copy:
+    src: "{{ file_item.path }}"
+    dest: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions/"
+  loop: "{{ ignition_files_to_copy.files }}"
+  loop_control:
+    loop_var: file_item
+    label: "Copying {{ file_item.path }}"
+
+- name: Generate append-bootstrap slipstreams
+  template:
+    src: append-bootstrap.json.j2
+    dest: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions/append-{{ node_item.name }}.ign"
+  loop: "{{ cluster_nodes }}"
+  loop_control:
+    loop_var: node_item
+    label: "Creating the slipstreamed append-bootstrap for {{ node_item.name }}..."
+  when: node_item.type != 'helper'
+
+- name: Generate the helper node butane file
+  template:
+    src: helper-ignition.yaml.j2
+    dest: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions/append-helper.bu"
+  loop: "{{ cluster_nodes }}"
+  loop_control:
+    loop_var: node_item
+    label: "Creating the slipstreamed append-bootstrap for {{ node_item.name }}..."
+  vars:
+    cluster_nodes: "{{ cluster_nodes }}"
+  when: node_item.type == 'helper'
+
+- name: Check for the butane file
+  ansible.builtin.stat:
+    path: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions/append-helper.bu"
+  register: helper_butane_file_check
+
+- name: Generate butane file from the ignition file
+  when: helper_butane_file_check.stat.exists == true
+  ansible.builtin.shell: "{{ butane_binary }} --pretty --strict < {{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions/append-helper.bu > {{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/config/ignitions/append-helper.ign"

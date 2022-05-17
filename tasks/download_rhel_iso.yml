@@ -1,0 +1,14 @@
+---
+- name: Download ISO if needed
+  block:
+    - name: Check for existing ISO
+      ansible.builtin.stat:
+        path: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/ova/rhel8.iso"
+      register: iso_check
+
+    - name: Pull RHEL ISO if needed
+      get_url:
+        url: "https://api.access.redhat.com/management/v1/images/{{ rhel_iso_sha_sum }}/download"
+        headers: "{{ compiled_uri_headers }}"
+        dest: "{{ generated_asset_directory }}/{{ cluster_domain }}/{{ cluster_name }}/ova/rhel8.iso"
+      when: not iso_check.stat.exists
